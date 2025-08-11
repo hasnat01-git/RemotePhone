@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">RemotePhone</string>
+    <string name="accessibility_service_label">Remote Phone Call Control</string>
+    <string name="accessibility_service_description">This service allows the app to remotely answer or reject phone calls.</string>
+</resources>

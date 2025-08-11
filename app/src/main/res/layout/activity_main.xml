@@ -1,0 +1,233 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="16dp"
+    tools:context=".MainActivity">
+
+    <TextView
+        android:id="@+id/appModeTextView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="App Mode: None"
+        android:textSize="20sp"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <LinearLayout
+        android:id="@+id/modeButtonsLayout"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:gravity="center"
+        android:orientation="horizontal"
+        app:layout_constraintTop_toBottomOf="@id/appModeTextView">
+
+        <Button
+            android:id="@+id/hostButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="8dp"
+            android:layout_weight="1"
+            android:text="Host" />
+
+        <Button
+            android:id="@+id/clientButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:text="Client" />
+    </LinearLayout>
+
+    <EditText
+        android:id="@+id/hostIpEditText"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:hint="Enter Host IP Address"
+        android:inputType="textUri"
+        android:visibility="gone"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/modeButtonsLayout" />
+
+    <TextView
+        android:id="@+id/ipTextView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="Your IP: "
+        android:textSize="18sp"
+        android:visibility="gone"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/hostIpEditText" />
+
+    <LinearLayout
+        android:id="@+id/serviceButtonsLayout"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:gravity="center"
+        android:orientation="horizontal"
+        app:layout_constraintTop_toBottomOf="@id/ipTextView">
+
+        <Button
+            android:id="@+id/startServiceButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="8dp"
+            android:layout_weight="1"
+            android:text="Start Service" />
+
+        <Button
+            android:id="@+id/stopServiceButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:text="Stop Service" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/statusTextView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="Status: "
+        android:textSize="18sp"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/serviceButtonsLayout" />
+
+    <View
+        android:id="@+id/divider"
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_marginTop="16dp"
+        android:background="?android:attr/listDivider"
+        app:layout_constraintTop_toBottomOf="@id/statusTextView" />
+
+    <LinearLayout
+        android:id="@+id/dialpadLayout"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:orientation="vertical"
+        android:paddingTop="16dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/divider">
+
+        <EditText
+            android:id="@+id/dialpadEditText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            android:background="@android:color/transparent"
+            android:hint="Enter number"
+            android:inputType="phone"
+            android:textAlignment="center"
+            android:textSize="30sp"
+            android:longClickable="true"
+            android:focusableInTouchMode="true"
+            android:cursorVisible="false" />
+
+        <TableLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:stretchColumns="*">
+
+            <TableRow>
+                <Button android:id="@+id/btn_1" style="@style/DialpadButton" android:text="1" />
+                <Button android:id="@+id/btn_2" style="@style/DialpadButton" android:text="2" />
+                <Button android:id="@+id/btn_3" style="@style/DialpadButton" android:text="3" />
+            </TableRow>
+            <TableRow>
+                <Button android:id="@+id/btn_4" style="@style/DialpadButton" android:text="4" />
+                <Button android:id="@+id/btn_5" style="@style/DialpadButton" android:text="5" />
+                <Button android:id="@+id/btn_6" style="@style/DialpadButton" android:text="6" />
+            </TableRow>
+            <TableRow>
+                <Button android:id="@+id/btn_7" style="@style/DialpadButton" android:text="7" />
+                <Button android:id="@+id/btn_8" style="@style/DialpadButton" android:text="8" />
+                <Button android:id="@+id/btn_9" style="@style/DialpadButton" android:text="9" />
+            </TableRow>
+            <TableRow>
+                <Button android:id="@+id/btn_asterisk" style="@style/DialpadButton" android:text="*" />
+                <Button android:id="@+id/btn_0" style="@style/DialpadButton" android:text="0" />
+                <Button android:id="@+id/btn_hash" style="@style/DialpadButton" android:text="#" />
+            </TableRow>
+        </TableLayout>
+
+        <LinearLayout
+            android:id="@+id/actionButtonsLayout"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:gravity="center"
+            android:orientation="horizontal">
+
+            <ImageButton
+                android:id="@+id/contactsButton"
+                android:layout_width="64dp"
+                android:layout_height="64dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Contacts"
+                android:src="@android:drawable/ic_menu_agenda"
+                app:tint="?android:attr/textColorPrimary" />
+
+            <ImageButton
+                android:id="@+id/callButton"
+                android:layout_width="64dp"
+                android:layout_height="64dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:backgroundTint="#4CAF50"
+                android:contentDescription="Call"
+                android:src="@android:drawable/sym_call_outgoing"
+                app:tint="@android:color/black"
+                android:layout_marginStart="8dp"
+                android:layout_marginEnd="8dp"
+                android:visibility="gone"/>
+
+            <LinearLayout
+                android:id="@+id/clientCallButtonsLayout"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:orientation="horizontal"
+                android:visibility="gone">
+
+                <Button
+                    android:id="@+id/callFromHostButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="4dp"
+                    android:layout_weight="1"
+                    android:text="Call from Host" />
+
+                <Button
+                    android:id="@+id/callDirectlyButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="4dp"
+                    android:layout_weight="1"
+                    android:text="Call from this device" />
+            </LinearLayout>
+
+            <ImageButton
+                android:id="@+id/btn_backspace"
+                android:layout_width="64dp"
+                android:layout_height="64dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Backspace"
+                android:src="@android:drawable/ic_input_delete"
+                app:tint="?android:attr/textColorSecondary" />
+        </LinearLayout>
+    </LinearLayout>
+</androidx.constraintlayout.widget.ConstraintLayout>

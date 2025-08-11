@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<permissions xmlns:android="http://schemas.android.com/apk/res/android">
+    <privapp-permissions package="com.hasnat.remotephone">
+
+        <!-- Call control and phone state -->
+        <permission name="android.permission.ANSWER_PHONE_CALLS" />
+        <permission name="android.permission.CALL_PHONE" />
+        <permission name="android.permission.MODIFY_PHONE_STATE" />
+        <permission name="android.permission.READ_PHONE_STATE" />
+        <permission name="android.permission.PROCESS_OUTGOING_CALLS" />
+
+        <!-- Startup and services -->
+        <permission name="android.permission.RECEIVE_BOOT_COMPLETED" />
+        <permission name="android.permission.FOREGROUND_SERVICE" />
+
+        <!-- Bluetooth -->
+        <permission name="android.permission.BLUETOOTH" />
+        <permission name="android.permission.BLUETOOTH_ADMIN" />
+        <permission name="android.permission.BLUETOOTH_CONNECT" />
+
+        <!-- Audio -->
+        <permission name="android.permission.RECORD_AUDIO" />
+
+        <!-- Notification access -->
+        <permission name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" />
+
+        <!-- Accessibility (used for call answering fallback) -->
+        <permission name="android.permission.BIND_ACCESSIBILITY_SERVICE" />
+
+    </privapp-permissions>
+</permissions>
