@@ -94,6 +94,16 @@
             android:text="Stop Service" />
     </LinearLayout>
 
+    <Button
+        android:id="@+id/setDefaultDialerButton"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Set as Default Dialer"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/serviceButtonsLayout" />
+
     <TextView
         android:id="@+id/statusTextView"
         android:layout_width="wrap_content"
@@ -103,7 +113,7 @@
         android:textSize="18sp"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/serviceButtonsLayout" />
+        app:layout_constraintTop_toBottomOf="@id/setDefaultDialerButton" />
 
     <View
         android:id="@+id/divider"
@@ -185,14 +195,14 @@
                 android:id="@+id/callButton"
                 android:layout_width="64dp"
                 android:layout_height="64dp"
+                android:layout_marginStart="8dp"
+                android:layout_marginEnd="8dp"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:backgroundTint="#4CAF50"
                 android:contentDescription="Call"
                 android:src="@android:drawable/sym_call_outgoing"
-                app:tint="@android:color/black"
-                android:layout_marginStart="8dp"
-                android:layout_marginEnd="8dp"
-                android:visibility="gone"/>
+                android:visibility="gone"
+                app:tint="@android:color/black" />
 
             <LinearLayout
                 android:id="@+id/clientCallButtonsLayout"

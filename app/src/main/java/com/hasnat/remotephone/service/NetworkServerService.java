@@ -7,13 +7,23 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
+import android.media.AudioFormat;
+import android.media.AudioManager;
+import android.media.AudioRecord;
+import android.media.AudioTrack;
+import android.media.MediaRecorder;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.IBinder;
+import android.provider.ContactsContract;
+import android.telecom.PhoneAccountHandle;
 import android.telecom.TelecomManager;
 import android.telephony.PhoneStateListener;
 import android.telephony.TelephonyManager;
@@ -21,6 +31,7 @@ import android.util.Log;
 import android.view.KeyEvent;
 import android.widget.Toast;
 
+import androidx.core.app.ActivityCompat;
 import androidx.core.app.NotificationCompat;
 import androidx.core.content.ContextCompat;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
@@ -31,7 +42,9 @@ import com.hasnat.remotephone.utils.WifiUtils;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -47,7 +60,8 @@ public class NetworkServerService extends Service {
     private static final String TAG = "NetworkServerService";
     private static final int TCP_SERVER_PORT = 8080;
     private static final String CHANNEL_ID = "NetworkServerServiceChannel";
-
+    private boolean isStreaming = false;
+    private Socket clientSocket;
     public static final String ACTION_HOST_STATUS = "com.hasnat.remotephone.HOST_STATUS";
     public static final String EXTRA_STATUS_MESSAGE = "status_message";
     public static final String ACTION_HANDLE_SMS = "com.hasnat.remotephone.service.ACTION_HANDLE_SMS";
@@ -55,7 +69,7 @@ public class NetworkServerService extends Service {
     public static final String ACTION_CLIENT_COUNT_UPDATE = "com.hasnat.remotephone.CLIENT_COUNT_UPDATE";
     public static final String EXTRA_CLIENT_COUNT = "client_count";
     public static final String ACTION_VOIP_READY = "com.hasnat.remotephone.ACTION_VOIP_READY";
-
+    private boolean wasInCall = false;
     private ServerSocket serverSocket;
     private Thread tcpServerThread;
     private String hostIpAddress;
@@ -65,6 +79,8 @@ public class NetworkServerService extends Service {
     private ExecutorService broadcastExecutor;
     private TelecomManager telecomManager;
     private TelephonyManager telephonyManager;
+    public static boolean isHostAsModemMode = false;
+
 
     private final BroadcastReceiver notificationReceiver = new BroadcastReceiver() {
         @Override
@@ -167,6 +183,46 @@ public class NetworkServerService extends Service {
         return null;
     }
 
+    private String getContactName(Context context, String phoneNumber) {
+        if (phoneNumber == null || phoneNumber.isEmpty()) {
+            return "Unknown";
+        }
+
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+            Log.w(TAG, "READ_CONTACTS permission not granted. Cannot look up contact name.");
+            return "Unknown";
+        }
+
+        String contactName = "Unknown";
+        Cursor cursor = null;
+
+        try {
+            Uri uri = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(phoneNumber));
+
+            cursor = context.getContentResolver().query(
+                    uri,
+                    new String[]{ContactsContract.PhoneLookup.DISPLAY_NAME},
+                    null, null, null
+            );
+
+            if (cursor != null && cursor.moveToFirst()) {
+                int nameIndex = cursor.getColumnIndex(ContactsContract.PhoneLookup.DISPLAY_NAME);
+                if (nameIndex != -1) {
+                    contactName = cursor.getString(nameIndex);
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error fetching contact name", e);
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+
+        return contactName;
+    }
+
+    // Updated setupPhoneStateListener()
     private void setupPhoneStateListener() {
         if (telephonyManager != null) {
             phoneStateListener = new PhoneStateListener() {
@@ -174,19 +230,35 @@ public class NetworkServerService extends Service {
                 public void onCallStateChanged(int state, String phoneNumber) {
                     switch (state) {
                         case TelephonyManager.CALL_STATE_RINGING:
-                            String number = (phoneNumber != null && !phoneNumber.isEmpty()) ? phoneNumber : "Unknown";
-                            Log.d(TAG, "Incoming call detected from " + number);
-                            broadcastExecutor.execute(() -> broadcastToClients("RINGING:" + number));
-                            updateNotification("Incoming Call", "From " + number);
-                            sendHostStatus("Host: Incoming call from " + number);
+                            wasInCall = true;
+                            String number = (phoneNumber != null && !phoneNumber.trim().isEmpty()) ? phoneNumber : "Unknown";
+                            // 💡 Get contact name for incoming call
+                            String contactName = getContactName(NetworkServerService.this, number);
+                            Log.d(TAG, "Incoming call detected from " + number + " (" + contactName + ")");
+
+                            // 💡 Send both name and number to the client
+                            broadcastExecutor.execute(() -> broadcastToClients("RINGING:" + number + "|" + (contactName != null ? contactName : "Unknown")));
+                            updateNotification("Incoming Call", "From " + (contactName != null ? contactName : number));
+                            sendHostStatus("Host: Incoming call from " + (contactName != null ? contactName : number));
                             break;
+
+                        case TelephonyManager.CALL_STATE_OFFHOOK:
+                            // This state is entered when a call is either outgoing or has been answered.
+                            wasInCall = true;
+                            Log.d(TAG, "Call is now OFFHOOK (outgoing or answered).");
+                            // *** Add this crucial line to inform the client ***
+                            broadcastExecutor.execute(() -> broadcastToClients("CALL_STARTED"));
+                            break;
+
                         case TelephonyManager.CALL_STATE_IDLE:
-                            Log.d(TAG, "Call ended or idle");
-                            broadcastExecutor.execute(() -> broadcastToClients("CALL_IDLE"));
-                            String status = "Host: My IP is " + hostIpAddress + ". Waiting for client...";
-                            updateNotification("Remote Phone Host", status);
-                            sendHostStatus(status);
-                            stopVoIPServer();
+                            if (wasInCall) {
+                                Log.d(TAG, "Call ended");
+                                broadcastExecutor.execute(() -> broadcastToClients("CALL_IDLE"));
+                                String status = "Host: My IP is " + hostIpAddress + ". Waiting for client...";
+                                updateNotification("Remote Phone Host", status);
+                                sendHostStatus(status);
+                                wasInCall = false;
+                            }
                             break;
                     }
                 }
@@ -248,15 +320,144 @@ public class NetworkServerService extends Service {
 
     private void handleIncomingCommand(String command) {
         Log.d(TAG, "handleIncomingCommand: Processing command -> " + command);
+
         if ("ANSWER".equals(command)) {
             answerCall();
         } else if ("END_CALL".equals(command)) {
             endCall();
+        } else if ("MUTE".equals(command)) {
+            setMute(true);
+        } else if ("UNMUTE".equals(command)) {
+            setMute(false);
+        } else if ("HOLD".equals(command)) {
+            setOnHold(true);
+        } else if ("RESUME".equals(command)) {
+            setOnHold(false);
+        } else if ("SPEAKER_ON".equals(command)) {
+            setSpeaker(true);
+        } else if ("SPEAKER_OFF".equals(command)) {
+            setSpeaker(false);
         } else if (command.startsWith("DIAL:")) {
             String phoneNumber = command.substring(5);
-            dialNumber(phoneNumber);
+            dialWithTelecom(phoneNumber);
+        } else if (command.startsWith("REMOTE_CALL:")) {
+            String number = command.substring("REMOTE_CALL:".length());
+            placeCall(number);
+            startAudioBridge();
         }
     }
+
+    private void setMute(boolean muted) {
+        AudioManager audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        if (audioManager != null) {
+            audioManager.setMicrophoneMute(muted);
+            Log.d(TAG, "Microphone mute is now " + (muted ? "ON" : "OFF"));
+        } else {
+            Log.e(TAG, "AudioManager is null, cannot change mute status.");
+        }
+    }
+
+    private void setSpeaker(boolean enabled) {
+        AudioManager audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        if (audioManager != null) {
+            audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
+            audioManager.setSpeakerphoneOn(enabled);
+            Log.d(TAG, "Speakerphone is now " + (enabled ? "ON" : "OFF"));
+        } else {
+            Log.e(TAG, "AudioManager is null, cannot change speaker status.");
+        }
+    }
+
+    private void setOnHold(boolean onHold) {
+        if (onHold) {
+            Log.d(TAG, "Call put on hold.");
+            // TODO: Implement logic to put the call on hold via Telecom API.
+            // This usually involves finding the active call and calling connection.setOnHold().
+        } else {
+            Log.d(TAG, "Call resumed from hold.");
+            // TODO: Implement logic to resume the call via Telecom API.
+            // This usually involves finding the held call and calling connection.setActive().
+        }
+    }
+
+
+    private void placeCall(String number) {
+        Intent callIntent = new Intent(Intent.ACTION_CALL);
+        callIntent.setData(Uri.parse("tel:" + number));
+        callIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE)
+                == PackageManager.PERMISSION_GRANTED) {
+            startActivity(callIntent);
+        } else {
+            Log.e(TAG, "CALL_PHONE permission not granted");
+        }
+    }
+
+
+    private void startAudioBridge() {
+        isStreaming = true;
+
+        new Thread(() -> {
+            int bufferSize = AudioRecord.getMinBufferSize(
+                    16000, AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT);
+
+            AudioRecord recorder = new AudioRecord(
+                    MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                    16000, AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    bufferSize);
+
+            recorder.startRecording();
+            byte[] buffer = new byte[bufferSize];
+
+            try {
+                OutputStream out = clientSocket.getOutputStream();
+                while (isStreaming) {
+                    int read = recorder.read(buffer, 0, buffer.length);
+                    if (read > 0) {
+                        out.write(buffer, 0, read);
+                    }
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            } finally {
+                recorder.stop();
+                recorder.release();
+            }
+        }).start();
+
+        new Thread(() -> {
+            int bufferSize = AudioTrack.getMinBufferSize(
+                    16000, AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT);
+
+            AudioTrack player = new AudioTrack(
+                    AudioManager.STREAM_VOICE_CALL,
+                    16000, AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    bufferSize, AudioTrack.MODE_STREAM);
+
+            player.play();
+            byte[] buffer = new byte[bufferSize];
+
+            try {
+                InputStream in = clientSocket.getInputStream();
+                while (isStreaming) {
+                    int read = in.read(buffer);
+                    if (read > 0) {
+                        player.write(buffer, 0, read);
+                    }
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            } finally {
+                player.stop();
+                player.release();
+            }
+        }).start();
+    }
+
 
     private void answerCall() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -313,27 +514,6 @@ public class NetworkServerService extends Service {
                 Log.e(TAG, "SecurityException while ending call", e);
                 sendCommandToClient("STATUS:Permission denied to end call.");
             }
-        }
-    }
-
-    private void dialNumber(String phoneNumber) {
-        Log.d(TAG, "dialNumber: Checking permissions for call.");
-        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
-            Log.e(TAG, "CALL_PHONE permission not granted. Cannot dial from service.");
-            sendHostStatus("Host: Permission to call is missing.");
-            return;
-        }
-
-        try {
-            Log.d(TAG, "Host is attempting to dial: " + phoneNumber);
-            Intent dialIntent = new Intent(Intent.ACTION_CALL);
-            dialIntent.setData(Uri.parse("tel:" + phoneNumber));
-            dialIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(dialIntent);
-            sendHostStatus("Host: Dialing " + phoneNumber);
-        } catch (SecurityException e) {
-            Log.e(TAG, "SecurityException while trying to dial.", e);
-            sendHostStatus("Host: Security error while trying to call.");
         }
     }
 
@@ -464,6 +644,36 @@ public class NetworkServerService extends Service {
                     Log.e(TAG, "Error closing client socket", e);
                 }
             }
+        }
+    }
+
+    // New, correct method to place a call using the Telecom API
+    private void dialWithTelecom(String phoneNumber) {
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) {
+            TelecomManager telecomManager = (TelecomManager) getSystemService(Context.TELECOM_SERVICE);
+            if (telecomManager != null) {
+                Uri uri = Uri.fromParts("tel", phoneNumber, null);
+                Bundle extras = new Bundle();
+
+                // 💡 Get contact name and add it to the extras
+                String contactName = getContactName(this, phoneNumber);
+                extras.putString("CONTACT_NAME", contactName);
+
+                PhoneAccountHandle phoneAccountHandle = new PhoneAccountHandle(
+                        new ComponentName(this, MyConnectionService.class), "RemotePhone");
+
+                extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, phoneAccountHandle);
+
+                Log.d(TAG, "Placing call via TelecomManager for number: " + phoneNumber);
+                telecomManager.placeCall(uri, extras);
+                sendHostStatus("Host: Placing call for " + (contactName != null ? contactName : phoneNumber));
+            } else {
+                Log.e(TAG, "TelecomManager is null, cannot place call.");
+                sendHostStatus("Host: Error placing call.");
+            }
+        } else {
+            Log.e(TAG, "CALL_PHONE permission not granted.");
+            sendHostStatus("Host: Permission to call is missing.");
         }
     }
 }

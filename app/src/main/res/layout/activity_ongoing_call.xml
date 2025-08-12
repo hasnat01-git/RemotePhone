@@ -1,0 +1,47 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:padding="20dp"
+    android:background="@android:color/black">
+
+    <TextView
+        android:id="@+id/callInfoTextView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="@android:color/white"
+        android:textSize="22sp"
+        android:layout_marginBottom="40dp" />
+
+    <Button
+        android:id="@+id/muteButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Mute"
+        android:layout_margin="10dp" />
+
+    <Button
+        android:id="@+id/holdButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Hold"
+        android:layout_margin="10dp" />
+
+    <Button
+        android:id="@+id/speakerButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Speaker On"
+        android:layout_margin="10dp" />
+
+    <Button
+        android:id="@+id/endButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="End Call"
+        android:background="@android:color/holo_red_dark"
+        android:textColor="@android:color/white"
+        android:layout_marginTop="30dp" />
+
+</LinearLayout>

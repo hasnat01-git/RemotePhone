@@ -1,7 +1,13 @@
 package com.hasnat.remotephone;
 
+import android.app.role.RoleManager;
+import android.content.Intent;
+import android.os.Build;
+import android.telecom.TelecomManager;
+import android.widget.Toast;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.database.Cursor;
 import android.net.Uri;
 import android.Manifest;
 import android.app.ActivityManager;
@@ -12,8 +18,8 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.os.Build;
 import android.os.Bundle;
+import android.provider.ContactsContract;
 import android.provider.Settings;
 import android.text.TextUtils;
 import android.util.Log;
@@ -22,10 +28,11 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.TextView;
-import android.widget.Toast;
 import android.view.ContextMenu;
 import android.view.MenuItem;
 import android.widget.LinearLayout;
+import android.telecom.PhoneAccount;
+import android.telecom.PhoneAccountHandle;
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AlertDialog;
@@ -34,6 +41,7 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
+import com.hasnat.remotephone.service.MyConnectionService;
 import com.hasnat.remotephone.service.NetworkClientService;
 import com.hasnat.remotephone.service.NetworkServerService;
 import com.hasnat.remotephone.utils.WifiUtils;
@@ -43,8 +51,9 @@ import java.util.Objects;
 public class MainActivity extends AppCompatActivity {
 
     private static final int PERMISSION_REQUEST_CODE = 100;
-    private static final int OVERLAY_PERMISSION_REQUEST_CODE = 101; // New request code for overlay permission
+    private static final int OVERLAY_PERMISSION_REQUEST_CODE = 101;
     private static final String[] PERMISSIONS;
+    private static final int REQUEST_ROLE_DIALER = 1234;
 
     static {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -67,7 +76,7 @@ public class MainActivity extends AppCompatActivity {
     private TextView statusTextView, ipTextView, appModeTextView;
     private EditText hostIpEditText;
     private String appMode = "None";
-
+    private Button setDefaultDialerButton;
     private EditText dialpadEditText;
     private ImageButton backspaceButton, contactsButton, callButton;
     private Button callFromHostButton, callDirectlyButton;
@@ -88,6 +97,15 @@ public class MainActivity extends AppCompatActivity {
         }
     };
 
+    private boolean checkPermissionsGranted() {
+        for (String permission : PERMISSIONS) {
+            if (ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private final BroadcastReceiver clientConnectionReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -105,6 +123,35 @@ public class MainActivity extends AppCompatActivity {
             }
         }
     };
+
+    private void requestDefaultDialerRole() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {  // Android 10+
+            RoleManager roleManager = getSystemService(RoleManager.class);
+            if (roleManager != null && !roleManager.isRoleHeld(RoleManager.ROLE_DIALER)) {
+                Intent roleRequestIntent = roleManager.createRequestRoleIntent(RoleManager.ROLE_DIALER);
+                startActivityForResult(roleRequestIntent, REQUEST_ROLE_DIALER);
+            }
+        } else {  // For Android 9 and below
+            TelecomManager telecomManager = (TelecomManager) getSystemService(TELECOM_SERVICE);
+            if (telecomManager != null && !getPackageName().equals(telecomManager.getDefaultDialerPackage())) {
+                Intent intent = new Intent(TelecomManager.ACTION_CHANGE_DEFAULT_DIALER);
+                intent.putExtra(TelecomManager.EXTRA_CHANGE_DEFAULT_DIALER_PACKAGE_NAME, getPackageName());
+                startActivityForResult(intent, REQUEST_ROLE_DIALER);
+            }
+        }
+    }
+
+    // New method to register the PhoneAccount
+    private void registerPhoneAccount() {
+        TelecomManager telecomManager = (TelecomManager) getSystemService(TELECOM_SERVICE);
+        if (telecomManager != null) {
+            PhoneAccountHandle handle = new PhoneAccountHandle(new ComponentName(this, MyConnectionService.class), "RemotePhone");
+            PhoneAccount.Builder builder = new PhoneAccount.Builder(handle, "RemotePhone");
+            builder.setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER);
+            builder.setShortDescription("RemotePhone Dialer");
+            telecomManager.registerPhoneAccount(builder.build());
+        }
+    }
 
     private final BroadcastReceiver clientStatusReceiver = new BroadcastReceiver() {
         @Override
@@ -129,9 +176,35 @@ public class MainActivity extends AppCompatActivity {
     };
 
     @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent); // Update the activity's current intent
+
+        // Handle incoming call intents from the system dialer
+        if (intent != null && intent.getData() != null &&
+                (Intent.ACTION_DIAL.equals(intent.getAction()) ||
+                        Intent.ACTION_CALL.equals(intent.getAction()))) {
+            String phoneNumber = intent.getData().getSchemeSpecificPart();
+            dialpadEditText.setText(phoneNumber);
+        }
+    }
+
+    @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        dialpadEditText = findViewById(R.id.dialpadEditText);
+
+        // Handle incoming call intents from the system dialer
+        Intent intent = getIntent();
+        if (intent != null && intent.getData() != null &&
+                (Intent.ACTION_DIAL.equals(intent.getAction()) ||
+                        Intent.ACTION_CALL.equals(intent.getAction()))) {
+
+            String phoneNumber = intent.getData().getSchemeSpecificPart();
+            dialpadEditText.setText(phoneNumber);
+        }
 
         hostButton = findViewById(R.id.hostButton);
         clientButton = findViewById(R.id.clientButton);
@@ -142,7 +215,6 @@ public class MainActivity extends AppCompatActivity {
         hostIpEditText = findViewById(R.id.hostIpEditText);
         appModeTextView = findViewById(R.id.appModeTextView);
 
-        dialpadEditText = findViewById(R.id.dialpadEditText);
         backspaceButton = findViewById(R.id.btn_backspace);
         contactsButton = findViewById(R.id.contactsButton);
         callButton = findViewById(R.id.callButton);
@@ -154,19 +226,20 @@ public class MainActivity extends AppCompatActivity {
         setupDialpadListeners();
         setupDialpadPasteFunctionality();
 
+        // Check and request permissions. This is crucial.
         checkAndRequestPermissions();
-        checkAndRequestSystemAlertPermission(); // Call the new method to request overlay permission
+        checkAndRequestSystemAlertPermission();
 
         hostButton.setOnClickListener(v -> setAppMode("Host"));
         clientButton.setOnClickListener(v -> setAppMode("Client"));
         startServiceButton.setOnClickListener(v -> startTheService());
         stopServiceButton.setOnClickListener(v -> stopTheService());
+
         contactsButton.setOnClickListener(v -> {
-            Intent intent = new Intent(MainActivity.this, ContactsActivity.class);
-            startActivity(intent);
+            Intent contactsIntent = new Intent(MainActivity.this, ContactsActivity.class);
+            startActivity(contactsIntent);
         });
 
-        // Listener for the generic call button (Host Mode only)
         callButton.setOnClickListener(v -> {
             String phoneNumber = dialpadEditText.getText().toString();
             if (!phoneNumber.isEmpty()) {
@@ -176,18 +249,20 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        // Listeners for the client-specific call buttons
         callFromHostButton.setOnClickListener(v -> {
             String phoneNumber = dialpadEditText.getText().toString();
             if (!phoneNumber.isEmpty()) {
+                NetworkServerService.isHostAsModemMode = true;
                 callFromHost(phoneNumber);
             } else {
                 Toast.makeText(this, "Please enter a number to call.", Toast.LENGTH_SHORT).show();
             }
         });
+
         callDirectlyButton.setOnClickListener(v -> {
             String phoneNumber = dialpadEditText.getText().toString();
             if (!phoneNumber.isEmpty()) {
+                NetworkServerService.isHostAsModemMode = false;
                 callDirectlyFromClient(phoneNumber);
             } else {
                 Toast.makeText(this, "Please enter a number to call.", Toast.LENGTH_SHORT).show();
@@ -196,6 +271,47 @@ public class MainActivity extends AppCompatActivity {
 
         updateUIForMode("None");
         LocalBroadcastManager.getInstance(this).registerReceiver(dialContactReceiver, new IntentFilter(ContactsActivity.ACTION_DIAL_CONTACT));
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == PERMISSION_REQUEST_CODE) {
+            boolean allGranted = true;
+            for (int result : grantResults) {
+                if (result != PackageManager.PERMISSION_GRANTED) {
+                    allGranted = false;
+                    break;
+                }
+            }
+
+            if (allGranted) {
+                Toast.makeText(this, "All permissions granted.", Toast.LENGTH_SHORT).show();
+                // Permissions are now granted, so it is safe to register the PhoneAccount and request the dialer role.
+                registerPhoneAccount();
+                requestDefaultDialerRole();
+            } else {
+                Toast.makeText(this, "Required permissions not granted. App may not function correctly.", Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+    private void sendCommandToHost(String command) {
+        Intent intent = new Intent(NetworkClientService.ACTION_SEND_COMMAND);
+        intent.putExtra(NetworkClientService.EXTRA_COMMAND, command);
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
+    }
+
+    private String getContactName(Context context, String phoneNumber) {
+        String contactName = "Unknown";
+        Uri uri = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(phoneNumber));
+        String[] projection = new String[]{ContactsContract.PhoneLookup.DISPLAY_NAME};
+        try (Cursor cursor = context.getContentResolver().query(uri, projection, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                contactName = cursor.getString(0);
+            }
+        }
+        return contactName;
     }
 
     private void setupDialpadListeners() {
@@ -303,20 +419,8 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == PERMISSION_REQUEST_CODE) {
-            for (int result : grantResults) {
-                if (result != PackageManager.PERMISSION_GRANTED) {
-                    Toast.makeText(this, "Required permissions not granted. App may not function correctly.", Toast.LENGTH_LONG).show();
-                    return;
-                }
-            }
-        }
-    }
 
-    // New method to check and request the SYSTEM_ALERT_WINDOW permission
+
     private void checkAndRequestSystemAlertPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
             new AlertDialog.Builder(this)
@@ -332,15 +436,21 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // Override onActivityResult to handle the result from the settings screen
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+
         if (requestCode == OVERLAY_PERMISSION_REQUEST_CODE) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && Settings.canDrawOverlays(this)) {
                 Toast.makeText(this, "Permission granted. Incoming calls will now be displayed.", Toast.LENGTH_SHORT).show();
             } else {
                 Toast.makeText(this, "Permission denied. Incoming call display may not work.", Toast.LENGTH_LONG).show();
+            }
+        } else if (requestCode == REQUEST_ROLE_DIALER) {
+            if (resultCode == RESULT_OK) {
+                Toast.makeText(this, "App set as default dialer", Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(this, "App NOT set as default dialer", Toast.LENGTH_SHORT).show();
             }
         }
     }
@@ -379,7 +489,6 @@ public class MainActivity extends AppCompatActivity {
         stopServiceButton.setVisibility(View.VISIBLE);
     }
 
-    // Original dialCall method, now for Host Mode only
     private void dialCall(String phoneNumber) {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) {
             Intent dialIntent = new Intent(Intent.ACTION_CALL);
@@ -399,12 +508,22 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    // In MainActivity.java
+
     private void callFromHost(String phoneNumber) {
         Log.d("ClientCallDebug", "Sending DIAL command to Host for number: " + phoneNumber);
+
+        // 💡 First, get the contact name on the client side
+        String contactName = getContactName(this, phoneNumber);
+
+        // 💡 Store the number AND name in the static variables of NetworkClientService
+        NetworkClientService.lastDialedNumber = phoneNumber;
+        NetworkClientService.lastDialedName = contactName;
+
         Intent intent = new Intent(NetworkClientService.ACTION_SEND_COMMAND);
         intent.putExtra(NetworkClientService.EXTRA_COMMAND, "DIAL:" + phoneNumber);
         LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
-        Toast.makeText(this, "Calling " + phoneNumber + " on host...", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Calling " + (contactName != null ? contactName : phoneNumber) + " on host...", Toast.LENGTH_SHORT).show();
     }
 
     private void callDirectlyFromClient(String phoneNumber) {

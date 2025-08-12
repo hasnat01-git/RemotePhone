@@ -8,6 +8,11 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.media.AudioFormat;
+import android.media.AudioManager;
+import android.media.AudioRecord;
+import android.media.AudioTrack;
+import android.media.MediaRecorder;
 import android.os.Build;
 import android.os.IBinder;
 import android.util.Log;
@@ -15,11 +20,14 @@ import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 import com.hasnat.remotephone.MainActivity;
+import com.hasnat.remotephone.OngoingCallActivity;
 import com.hasnat.remotephone.R;
 import com.hasnat.remotephone.IncomingCallActivity;
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.net.Socket;
 import java.util.concurrent.ExecutorService;
@@ -43,7 +51,10 @@ public class NetworkClientService extends Service {
     private BufferedReader reader;
     private Thread clientThread;
     private String serverIpAddress;
-   private final BroadcastReceiver commandReceiver = new BroadcastReceiver() {
+    private volatile boolean isStreaming = false;
+    public static String lastDialedNumber;
+    public static String lastDialedName;
+    private final BroadcastReceiver commandReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
             if (ACTION_SEND_COMMAND.equals(intent.getAction())) {
@@ -119,6 +130,52 @@ public class NetworkClientService extends Service {
             }
         }
     }
+
+    private String getContactName(Context context, String phoneNumber) {
+        if (phoneNumber == null || phoneNumber.isEmpty()) {
+            return "Unknown";
+        }
+
+        // Check permission
+        if (androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.READ_CONTACTS
+        ) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            Log.w(TAG, "READ_CONTACTS permission not granted. Cannot look up contact name.");
+            return "Unknown";
+        }
+
+        String contactName = "Unknown";
+        android.database.Cursor cursor = null;
+
+        try {
+            android.net.Uri uri = android.provider.ContactsContract.PhoneLookup.CONTENT_FILTER_URI
+                    .buildUpon()
+                    .appendPath(phoneNumber)
+                    .build();
+
+            cursor = context.getContentResolver().query(
+                    uri,
+                    new String[]{android.provider.ContactsContract.PhoneLookup.DISPLAY_NAME},
+                    null, null, null
+            );
+
+            if (cursor != null && cursor.moveToFirst()) {
+                contactName = cursor.getString(
+                        cursor.getColumnIndexOrThrow(android.provider.ContactsContract.PhoneLookup.DISPLAY_NAME)
+                );
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error fetching contact name", e);
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+
+        return contactName;
+    }
+
     private Notification createNotification(String title, String text) {
         Intent notificationIntent = new Intent(this, MainActivity.class);
         notificationIntent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
@@ -224,15 +281,101 @@ public class NetworkClientService extends Service {
     }
     private void handleServerMessage(String message) {
         if (message.startsWith("RINGING:")) {
-            String incomingNumber = message.substring("RINGING:".length());
-            Log.d(TAG, "Incoming call detected: " + incomingNumber);
+            // The host now sends "RINGING:phoneNumber|contactName"
+            String[] parts = message.substring("RINGING:".length()).split("\\|", 2);
+            String incomingNumber = parts[0];
+            String contactName = parts.length > 1 ? parts[1] : "Unknown";
+
+            Log.d(TAG, "Incoming call detected: " + incomingNumber + " (" + contactName + ")");
             Intent callIntent = new Intent(this, IncomingCallActivity.class);
             callIntent.putExtra(EXTRA_INCOMING_NUMBER, incomingNumber);
+            callIntent.putExtra("EXTRA_INCOMING_NAME", contactName); // Pass the contact name
             callIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(callIntent);
         } else if (message.equals("CALL_IDLE")) {
             Log.d(TAG, "Call ended on host.");
             sendClientStatus("Client: Call ended.");
+        } else if (message.equals("CALL_STARTED")) {
+            Log.d(TAG, "Call started on host, launching OngoingCallActivity.");
+            Intent ongoingCallIntent = new Intent(this, OngoingCallActivity.class);
+            ongoingCallIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+            // Pass the stored number and the newly stored name to the OngoingCallActivity
+            ongoingCallIntent.putExtra("PHONE_NUMBER", lastDialedNumber);
+            ongoingCallIntent.putExtra("CONTACT_NAME", lastDialedName);
+
+            startActivity(ongoingCallIntent);
+        } else if (message.equals("START_AUDIO_BRIDGE")) {
+            startAudioBridgeToHost();
         }
     }
+
+    private void startAudioBridgeToHost() {
+        isStreaming = true;
+
+        // Client microphone → Host
+        new Thread(() -> {
+            int bufferSize = AudioRecord.getMinBufferSize(
+                    16000, AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT);
+
+            AudioRecord recorder = new AudioRecord(
+                    MediaRecorder.AudioSource.MIC,
+                    16000, AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    bufferSize);
+
+            recorder.startRecording();
+            byte[] buffer = new byte[bufferSize];
+
+            try {
+                OutputStream out = socket.getOutputStream();
+                while (isStreaming) {
+                    int read = recorder.read(buffer, 0, buffer.length);
+                    if (read > 0) {
+                        out.write(buffer, 0, read);
+                    }
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            } finally {
+                recorder.stop();
+                recorder.release();
+            }
+        }).start();
+
+        // Host audio → Client speaker
+        new Thread(() -> {
+            int bufferSize = AudioTrack.getMinBufferSize(
+                    16000, AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT);
+
+            AudioTrack player = new AudioTrack(
+                    AudioManager.STREAM_VOICE_CALL,
+                    16000, AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    bufferSize, AudioTrack.MODE_STREAM);
+
+            player.play();
+            byte[] buffer = new byte[bufferSize];
+
+            try {
+                InputStream in = socket.getInputStream();
+                while (isStreaming) {
+                    int read = in.read(buffer);
+                    if (read > 0) {
+                        player.write(buffer, 0, read);
+                    }
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            } finally {
+                player.stop();
+                player.release();
+            }
+        }).start();
+    }
+
+
+
 }
