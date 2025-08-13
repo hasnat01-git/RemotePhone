@@ -98,11 +98,6 @@ public class ContactsActivity extends AppCompatActivity implements SearchView.On
         return false;
     }
 
-    /**
-     * Custom SimpleCursorAdapter that correctly handles filtering.
-     * This version rebuilds the query to filter results from the content provider,
-     * which is more efficient for large datasets.
-     */
     class SimpleCursorAdapterWithFilter extends SimpleCursorAdapter {
         private String filterQuery = null;
 

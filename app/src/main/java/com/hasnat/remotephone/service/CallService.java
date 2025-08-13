@@ -24,6 +24,11 @@ import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.net.Socket;
 
+/**
+ * A foreground service that runs on the host device to listen for incoming calls.
+ * When a call is detected, it sends a network command to a client device
+ * to trigger the remote call UI.
+ */
 public class CallService extends Service {
 
     private static final String TAG = "CallService";
@@ -31,9 +36,15 @@ public class CallService extends Service {
     public static final String EXTRA_CALL_NUMBER = "call_number";
 
     private static final String NOTIFICATION_CHANNEL_ID = "RemotePhoneChannel";
+    // NOTE: This IP address is hardcoded and may need to be dynamically determined.
+    // This assumes the host and client are on the same local network.
     private static final String CLIENT_IP_ADDRESS = "192.168.43.1"; // The client phone's IP
     private static final int CLIENT_PORT = 8081; // A new port for host-to-client messages
 
+    /**
+     * BroadcastReceiver to handle incoming call events.
+     * It listens for an intent with ACTION_INCOMING_CALL.
+     */
     private final BroadcastReceiver callEventReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -48,17 +59,30 @@ public class CallService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        // Register the broadcast receiver to listen for our custom intent
         LocalBroadcastManager.getInstance(this).registerReceiver(
                 callEventReceiver, new IntentFilter(ACTION_INCOMING_CALL));
+        // Start the service in the foreground to prevent it from being killed by the OS
         startForegroundServiceNotification();
     }
 
+    /**
+     * Handles the incoming call event by sending call information to the client.
+     *
+     * @param number The phone number of the incoming call.
+     */
     private void handleIncomingCall(String number) {
         Log.d(TAG, "Incoming call detected, sending to clients: " + number);
         // Send the call info to the client over the network
         sendCallInfoToClient(number);
     }
 
+    /**
+     * Sends the incoming call details to the client device over a TCP socket.
+     * This runs on a separate thread to avoid blocking the main UI thread.
+     *
+     * @param number The incoming phone number.
+     */
     private void sendCallInfoToClient(String number) {
         new Thread(() -> {
             try (Socket socket = new Socket(CLIENT_IP_ADDRESS, CLIENT_PORT)) {
@@ -73,6 +97,9 @@ public class CallService extends Service {
         }).start();
     }
 
+    /**
+     * Creates and starts a foreground notification for the service.
+     */
     private void startForegroundServiceNotification() {
         createNotificationChannel();
         Intent notificationIntent = new Intent(this, CallUIActivity.class);
@@ -87,6 +114,9 @@ public class CallService extends Service {
         startForeground(1, notification);
     }
 
+    /**
+     * Creates a notification channel for Android 8.0 (Oreo) and higher.
+     */
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel serviceChannel = new NotificationChannel(
