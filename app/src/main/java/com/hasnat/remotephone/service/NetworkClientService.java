@@ -1,5 +1,6 @@
 package com.hasnat.remotephone.service;
 
+import android.Manifest;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -9,6 +10,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioRecord;
@@ -20,6 +22,7 @@ import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.core.app.ActivityCompat;
 import androidx.core.app.NotificationCompat;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
@@ -38,13 +41,13 @@ import java.io.PrintWriter;
 import java.net.Socket;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 /**
  * Service to connect to a Remote Phone Host and manage call signaling and audio streaming.
  * It handles connecting to the host, sending commands, and processing messages from the host.
  */
 public class NetworkClientService extends Service {
-
 
     public static final String ACTION_HOST_CALL_STARTED = "" ;
     private static final String TAG = "NetworkClientService";
@@ -80,7 +83,14 @@ public class NetworkClientService extends Service {
     public static String currentCallName;
 
     private static final int AUDIO_SERVER_PORT = 8081;
+    private static final int AUDIO_CONNECTION_RETRY_COUNT = 5;
+    private static final long AUDIO_CONNECTION_RETRY_DELAY_MS = 1000;
+
     private Socket audioSocket;
+    private ExecutorService audioStreamingExecutor;
+    private Future<?> clientMicStreamFuture;
+    private Future<?> hostMicStreamFuture;
+
     /**
      * BroadcastReceiver to listen for commands from the UI.
      */
@@ -102,6 +112,7 @@ public class NetworkClientService extends Service {
         super.onCreate();
         createNotificationChannel();
         clientExecutor = Executors.newSingleThreadExecutor();
+        audioStreamingExecutor = Executors.newFixedThreadPool(2);
         startForeground(NOTIFICATION_ID, createNotification("Remote Phone Client", "Client service is running."));
         LocalBroadcastManager.getInstance(this).registerReceiver(commandReceiver, new IntentFilter(ACTION_SEND_COMMAND));
     }
@@ -132,6 +143,9 @@ public class NetworkClientService extends Service {
         LocalBroadcastManager.getInstance(this).unregisterReceiver(commandReceiver);
         if (clientExecutor != null) {
             clientExecutor.shutdownNow();
+        }
+        if (audioStreamingExecutor != null) {
+            audioStreamingExecutor.shutdownNow();
         }
     }
 
@@ -372,22 +386,36 @@ public class NetworkClientService extends Service {
     // Add this new method to NetworkClientService to manage the audio connection.
     private void startAudioConnectionToServer() {
         clientExecutor.execute(() -> {
-            try {
-                // Establish the audio socket connection on the specified port.
-                audioSocket = new Socket(serverIpAddress, AUDIO_SERVER_PORT);
-                Log.d(TAG, "Audio socket connected to host.");
+            boolean connected = false;
+            for (int i = 0; i < AUDIO_CONNECTION_RETRY_COUNT; i++) {
+                try {
+                    // Establish the audio socket connection on the specified port.
+                    audioSocket = new Socket(serverIpAddress, AUDIO_SERVER_PORT);
+                    Log.d(TAG, "Audio socket connected to host on attempt " + (i + 1));
+                    connected = true;
+                    break;
+                } catch (IOException e) {
+                    Log.w(TAG, "Failed to connect audio socket to host on attempt " + (i + 1) + ". Retrying...", e);
+                    try {
+                        Thread.sleep(AUDIO_CONNECTION_RETRY_DELAY_MS);
+                    } catch (InterruptedException interruptedException) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
 
+            if (connected) {
                 // Send a command to the host to let it know the audio connection is ready.
                 sendCommand("AUDIO_READY");
-
-            } catch (IOException e) {
-                Log.e(TAG, "Failed to connect audio socket to host.", e);
-                sendClientStatus("Client: Audio connection failed.");
-                // Handle disconnection gracefully if audio fails to connect
-                disconnect();
+            } else {
+                Log.e(TAG, "Failed to connect audio socket to host after " + AUDIO_CONNECTION_RETRY_COUNT + " attempts.");
+                sendClientStatus("Client: Audio connection failed after multiple attempts.");
+                // We'll keep the main connection alive, but the audio bridge won't start.
             }
         });
     }
+
     /**
      * Starts the bidirectional audio bridge with the host.
      */
@@ -398,66 +426,82 @@ public class NetworkClientService extends Service {
         }
 
         isStreaming = true;
+        Log.d(TAG, "Starting bidirectional audio bridge.");
 
-        // Client microphone -> Host
-        new Thread(() -> {
-            int bufferSize = AudioRecord.getMinBufferSize(
-                    16000, AudioFormat.CHANNEL_IN_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT);
+        // Client microphone -> Host speaker (OUTGOING STREAM)
+        clientMicStreamFuture = audioStreamingExecutor.submit(this::streamClientMicToHost);
 
-            AudioRecord recorder = new AudioRecord(
-                    MediaRecorder.AudioSource.MIC,
-                    16000, AudioFormat.CHANNEL_IN_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT,
-                    bufferSize);
+        // Host microphone -> Client speaker (INCOMING STREAM)
+        hostMicStreamFuture = audioStreamingExecutor.submit(this::streamHostMicToClient);
+    }
 
-            try {
-                recorder.startRecording();
-                byte[] buffer = new byte[bufferSize];
-                OutputStream out = audioSocket.getOutputStream();
-                while (isStreaming && !Thread.currentThread().isInterrupted()) {
-                    int read = recorder.read(buffer, 0, buffer.length);
-                    if (read > 0) {
-                        out.write(buffer, 0, read);
-                    }
+    /**
+     * Streams audio from the client's microphone to the host's speaker.
+     */
+    private void streamClientMicToHost() {
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            Log.e(TAG, "RECORD_AUDIO permission not granted. Cannot stream mic to host.");
+            return;
+        }
+
+        int bufferSize = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+        AudioRecord recorder = new AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                16000, AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                bufferSize);
+
+        try (OutputStream out = audioSocket.getOutputStream()) {
+            recorder.startRecording();
+            byte[] buffer = new byte[bufferSize];
+            Log.d(TAG, "Client to host audio streaming started.");
+            while (isStreaming && !Thread.currentThread().isInterrupted()) {
+                int read = recorder.read(buffer, 0, buffer.length);
+                if (read > 0) {
+                    out.write(buffer, 0, read);
                 }
-            } catch (IOException e) {
-                Log.e(TAG, "Error in client mic streaming thread", e);
-            } finally {
+            }
+        } catch (IOException e) {
+            Log.e(TAG, "Error in client mic streaming thread", e);
+        } finally {
+            if (recorder.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) {
                 recorder.stop();
-                recorder.release();
             }
-        }).start();
+            recorder.release();
+            Log.d(TAG, "Client to host audio streaming stopped.");
+        }
+    }
 
-        // Host audio -> Client speaker
-        new Thread(() -> {
-            int bufferSize = AudioTrack.getMinBufferSize(
-                    16000, AudioFormat.CHANNEL_OUT_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT);
+    /**
+     * Streams audio from the host's microphone to the client's speaker.
+     */
+    private void streamHostMicToClient() {
+        int bufferSize = AudioTrack.getMinBufferSize(16000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
+        AudioTrack player = new AudioTrack(
+                AudioManager.STREAM_VOICE_CALL,
+                16000, AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                bufferSize, AudioTrack.MODE_STREAM);
 
-            AudioTrack player = new AudioTrack(
-                    AudioManager.STREAM_VOICE_CALL,
-                    16000, AudioFormat.CHANNEL_OUT_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT,
-                    bufferSize, AudioTrack.MODE_STREAM);
-
-            try {
-                player.play();
-                byte[] buffer = new byte[bufferSize];
-                InputStream in = audioSocket.getInputStream();
-                while (isStreaming && !Thread.currentThread().isInterrupted()) {
-                    int read = in.read(buffer);
-                    if (read > 0) {
-                        player.write(buffer, 0, read);
-                    }
+        try (InputStream in = audioSocket.getInputStream()) {
+            player.play();
+            byte[] buffer = new byte[bufferSize];
+            Log.d(TAG, "Host to client audio streaming started.");
+            while (isStreaming && !Thread.currentThread().isInterrupted()) {
+                int read = in.read(buffer);
+                if (read > 0) {
+                    player.write(buffer, 0, read);
                 }
-            } catch (IOException e) {
-                Log.e(TAG, "Error in client speaker streaming thread", e);
-            } finally {
-                player.stop();
-                player.release();
             }
-        }).start();
+        } catch (IOException e) {
+            Log.e(TAG, "Error in host mic streaming thread", e);
+        } finally {
+            if (player.getPlayState() == AudioTrack.PLAYSTATE_PLAYING) {
+                player.stop();
+            }
+            player.release();
+            Log.d(TAG, "Host to client audio streaming stopped.");
+        }
     }
 
     /**
@@ -466,5 +510,11 @@ public class NetworkClientService extends Service {
     private void stopAudioBridge() {
         isStreaming = false;
         Log.d(TAG, "Stopping audio bridge.");
+        if (clientMicStreamFuture != null) {
+            clientMicStreamFuture.cancel(true);
+        }
+        if (hostMicStreamFuture != null) {
+            hostMicStreamFuture.cancel(true);
+        }
     }
 }
